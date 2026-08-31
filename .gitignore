@@ -1,0 +1,20 @@
+# Compiled binaries / build artifacts
+*.exe
+*.exe~
+bin/
+*.test
+*.out
+
+# Go workspace cruft
+go.work
+go.work.sum
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local logs
+*.log
