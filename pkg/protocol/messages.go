@@ -245,16 +245,16 @@ type TableInfo struct {
 // PocketGeometryConfig defines pocket dimensions for client-side validation
 // Allows clients to sync with backend pocket geometry definitions
 type PocketGeometryConfig struct {
-	CornerMouthWidth  float64 `json:"cornerMouthWidth"`  // Corner pocket opening
-	SideMouthWidth    float64 `json:"sideMouthWidth"`    // Side pocket opening
-	CornerCutX        float64 `json:"cornerCutX"`        // Corner cushion cut point X
-	CornerCutY        float64 `json:"cornerCutY"`        // Corner cushion cut point Y
-	SideCutHalfX      float64 `json:"sideCutHalfX"`      // Side pocket cut point half-width
-	JawRadius         float64 `json:"jawRadius"`         // Pocket jaw corner radius
-	ThroatDepth       float64 `json:"throatDepth"`       // Pocket depth
-	CushionSegmentLongInner  float64 `json:"cushionSegmentLongInner"`  // Long-rail inner boundary
-	CushionSegmentLongOuter  float64 `json:"cushionSegmentLongOuter"`  // Long-rail outer boundary
-	CushionSegmentShortHalf  float64 `json:"cushionSegmentShortHalf"` // Short-rail half-width
+	CornerMouthWidth        float64 `json:"cornerMouthWidth"`        // Corner pocket opening
+	SideMouthWidth          float64 `json:"sideMouthWidth"`          // Side pocket opening
+	CornerCutX              float64 `json:"cornerCutX"`              // Corner cushion cut point X
+	CornerCutY              float64 `json:"cornerCutY"`              // Corner cushion cut point Y
+	SideCutHalfX            float64 `json:"sideCutHalfX"`            // Side pocket cut point half-width
+	JawRadius               float64 `json:"jawRadius"`               // Pocket jaw corner radius
+	ThroatDepth             float64 `json:"throatDepth"`             // Pocket depth
+	CushionSegmentLongInner float64 `json:"cushionSegmentLongInner"` // Long-rail inner boundary
+	CushionSegmentLongOuter float64 `json:"cushionSegmentLongOuter"` // Long-rail outer boundary
+	CushionSegmentShortHalf float64 `json:"cushionSegmentShortHalf"` // Short-rail half-width
 }
 
 // GameStateDTO is the full authoritative snapshot. Sent inside ROOM_JOINED,

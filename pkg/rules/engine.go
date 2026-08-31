@@ -202,8 +202,16 @@ func (g *Game) ApplyShotResult(rep ShotReport) (*protocol.StrikeResult, error) {
 	if needBallInHand {
 		g.resetCueBall()
 		g.BallInHand = true
-		// Rule #6: 全场自由球 - 犯规后可在全场任意位置摆球（不限 kitchen）
-		// 或根据 kitchenOnlyBallInHand 选项决定是否限制在 kitchen
+		// GAME_RULES.md §犯规结果 and §1 白球进袋 are explicit: placement is
+		// behind the head string, "非全场任意位置" (NOT anywhere on the table).
+		// So the kitchen restriction always follows the option; there is no
+		// full-table free ball in this ruleset.
+		//
+		// (A comment here once claimed "Rule #6: 全场自由球 - 犯规后可在全场
+		// 任意位置摆球（不限 kitchen）". That was wrong: GAME_RULES.md has no
+		// such rule, and the line below contradicted it. The bogus comment was
+		// the source of a test asserting behaviour the rules never specified.
+		// Do not reintroduce it.)
 		g.KitchenOnly = g.opts.KitchenOnlyBallInHand
 		g.Phase = protocol.PhaseBallInHand
 	} else {

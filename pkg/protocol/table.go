@@ -9,7 +9,7 @@ import "math"
 // the reachable limits for a *ball centre*, i.e. half a ball radius in from the
 // cushions, and are what placement / settling checks should compare against.
 const (
-	BoundaryHalfX = 1.3  // cushion face, X (long axis)
+	BoundaryHalfX = 1.3   // cushion face, X (long axis)
 	BoundaryHalfZ = 0.647 // cushion face, Z (short axis)
 	LimitX        = 1.26  // max |x| for a ball centre = BoundaryHalfX - BallRadius
 	LimitZ        = 0.607 // max |z| for a ball centre = BoundaryHalfZ - BallRadius
@@ -131,11 +131,11 @@ func DefaultTableInfo() TableInfo {
 		PocketGeometry: &PocketGeometryConfig{
 			CornerMouthWidth:        CornerMouthWidth,
 			SideMouthWidth:          SideMouthWidth,
-			CornerCutX:             CornerCutX,
-			CornerCutY:             CornerCutY,
-			SideCutHalfX:           SideCutHalfX,
-			JawRadius:              JawRadius,
-			ThroatDepth:            ThroatDepth,
+			CornerCutX:              CornerCutX,
+			CornerCutY:              CornerCutY,
+			SideCutHalfX:            SideCutHalfX,
+			JawRadius:               JawRadius,
+			ThroatDepth:             ThroatDepth,
 			CushionSegmentLongInner: CushionSegmentLongInner,
 			CushionSegmentLongOuter: CushionSegmentLongOuter,
 			CushionSegmentShortHalf: CushionSegmentShortHalf,

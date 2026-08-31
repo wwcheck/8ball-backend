@@ -164,54 +164,100 @@ func TestRule5BlackEightDeclaredPocket(t *testing.T) {
 	}
 }
 
-// TestRule6FullTableFreeBall 测试规则 #6：全场自由球
-func TestRule6FullTableFreeBall(t *testing.T) {
+// TestFoulBallInHandOnlyWhenCueBallPocketed pins down GAME_RULES.md §犯规结果:
+//
+//	所有犯规的共同结果：
+//	  1. 换人 (SwitchPlayer)
+//	  2. 白球进袋时：对手进入摆放模式，在开球线后区域（kitchen）摆放白球
+//	  3. 重置本轮数据
+//
+// So: every foul passes the turn, but ball-in-hand is granted ONLY when the cue
+// ball is pocketed or leaves the table — and even then placement is confined to
+// the kitchen, never the whole table (§1 白球进袋: "非全场任意位置").
+//
+// This replaces an earlier TestRule6FullTableFreeBall which asserted a
+// full-table free ball on *any* foul. GAME_RULES.md has no "rule #6" (fouls are
+// numbered 1-5) and explicitly rules out full-table placement, so the test was
+// inventing a rule rather than testing one. Per the product decision the
+// document wins and the test was corrected.
+func TestFoulBallInHandOnlyWhenCueBallPocketed(t *testing.T) {
+	// --- Case 1: wrong ball first, cue ball stays on the table -------------
+	// Expect the foul to be recorded and the turn to pass, but NO ball-in-hand.
 	g := NewGame(DefaultOptions())
 	p1, _ := g.AddPlayer("p1", "Player1", "")
-	g.AddPlayer("p2", "Player2", "")
+	p2, _ := g.AddPlayer("p2", "Player2", "")
 	p1.Group = GroupSolid
 	g.CurrentTurn = p1.ID
 	g.IsBreakShot = false
-
 	g.Balls = NewRack()
 
-	// 模拟犯规
 	rep := ShotReport{
 		ShooterID:           p1.ID,
 		ShotNumber:          1,
-		FirstContactBall:    9, // 碰到花色球（犯规）
+		FirstContactBall:    9, // a stripe while p1 is on solids -> FoulWrongBall
 		PocketedBalls:       []int{},
 		CueBallMoved:        true,
-		CushionAfterContact: false,
+		CushionAfterContact: true, // legal cushion contact; the wrong ball is the only foul
 		FinalBalls:          g.Balls[:],
 	}
 
 	res, err := g.ApplyShotResult(rep)
 	if err != nil {
-		t.Errorf("ApplyShotResult failed: %v", err)
-		return
+		t.Fatalf("ApplyShotResult failed: %v", err)
+	}
+	if res.FoulType == nil || *res.FoulType == protocol.FoulNone {
+		t.Fatalf("expected a foul for contacting a stripe first, got %v", res.FoulType)
+	}
+	if res.BallInHand {
+		t.Errorf("foul without a pocketed cue ball must not grant ball-in-hand")
+	}
+	if res.NextPhase == protocol.PhaseBallInHand {
+		t.Errorf("foul without a pocketed cue ball must not enter BallInHand, got %s", res.NextPhase)
+	}
+	if res.NextPlayerID != p2.ID {
+		t.Errorf("expected next player to be p2, got %s", res.NextPlayerID)
 	}
 
-	// 应该进入 BallInHand 阶段
+	// --- Case 2: cue ball pocketed -----------------------------------------
+	// Expect ball-in-hand for the opponent, restricted to the kitchen.
+	g = NewGame(DefaultOptions())
+	p1, _ = g.AddPlayer("p1", "Player1", "")
+	p2, _ = g.AddPlayer("p2", "Player2", "")
+	p1.Group = GroupSolid
+	g.CurrentTurn = p1.ID
+	g.IsBreakShot = false
+	g.Balls = NewRack()
+
+	// A real client reports the settled table with the cue ball already down.
+	final := g.Balls
+	final[protocol.CueBallID].InPocket = true
+
+	rep = ShotReport{
+		ShooterID:           p1.ID,
+		ShotNumber:          1,
+		FirstContactBall:    1, // legal first contact (a solid)
+		PocketedBalls:       []int{protocol.CueBallID},
+		CueBallMoved:        true,
+		CushionAfterContact: true,
+		FinalBalls:          final[:],
+	}
+
+	res, err = g.ApplyShotResult(rep)
+	if err != nil {
+		t.Fatalf("ApplyShotResult (cue ball pocketed) failed: %v", err)
+	}
+	if !res.BallInHand {
+		t.Errorf("pocketing the cue ball must grant ball-in-hand")
+	}
 	if res.NextPhase != protocol.PhaseBallInHand {
 		t.Errorf("expected BallInHand phase, got %s", res.NextPhase)
 	}
-
-	// 应该激活 BallInHand
-	if !res.BallInHand {
-		t.Errorf("expected BallInHand to be true")
+	if res.NextPlayerID != p2.ID {
+		t.Errorf("expected ball-in-hand to go to p2, got %s", res.NextPlayerID)
 	}
-
-	// KitchenOnly 取决于选项（此处默认为 false 表示全场自由球）
-	// 根据选项配置验证
-	if g.opts.KitchenOnlyBallInHand {
-		if !res.KitchenOnly {
-			t.Errorf("expected KitchenOnly when option is set")
-		}
-	} else {
-		if res.KitchenOnly {
-			t.Errorf("expected full-table free ball when option is not set")
-		}
+	// §1 白球进袋: placement is behind the head string, "非全场任意位置".
+	if g.opts.KitchenOnlyBallInHand && !res.KitchenOnly {
+		t.Errorf("placement must be confined to the kitchen when the option is set")
 	}
 }
 
