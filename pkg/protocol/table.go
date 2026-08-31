@@ -42,7 +42,7 @@ const (
 	PowerMaxSpeed = 8.0
 
 	// RestSpeedEpsilon is the speed below which a ball counts as stopped.
-	RestSpeedEpsilon = 0.01
+	RestSpeedEpsilon = 0.001
 )
 
 // PositionTolerance is the slack allowed when comparing reported positions
