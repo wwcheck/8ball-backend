@@ -12,15 +12,16 @@ import (
 // PocketedBalls is ordered by pocket time; the "8 must be the last ball to
 // drop" condition (GAME_RULES.md §胜负判定 #4) relies on that ordering.
 type ShotReport struct {
-	ShooterID           string
-	ShotNumber          int
-	FirstContactBall    int // 0 = the cue ball touched nothing
-	PocketedBalls       []int
-	OutOfBoundsBalls    []int
-	CueBallMoved        bool
-	CushionAfterContact bool
-	DeclaredPocket      *int // pocket number (0-5) for 8-ball declaration
-	FinalBalls          []protocol.BallState
+	ShooterID               string
+	ShotNumber              int
+	FirstContactBall        int // 0 = the cue ball touched nothing
+	PocketedBalls           []int
+	OutOfBoundsBalls        []int
+	CueBallMoved            bool
+	CushionAfterContact     bool
+	DeclaredPocket          *int // pocket number (0-5) for 8-ball declaration
+	ActualBlack8PocketIndex *int // pocket number (0-5) where 8-ball actually fell; nil if 8 didn't pocket
+	FinalBalls              []protocol.BallState
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +142,13 @@ func (g *Game) ApplyShotResult(rep ShotReport) (*protocol.StrikeResult, error) {
 			// 进黑8但未指定袋口，拒绝
 			return g.loseWith(res, shooter, opponent,
 				protocol.FoulWrongBall, protocol.ReasonIllegalEightBall), nil
+		}
+
+		// Rule #5 续：黑8必须进入指定的袋口。前端若已上报实际进袋号则校验一致性。
+		if legal && rep.DeclaredPocket != nil && rep.ActualBlack8PocketIndex != nil &&
+			*rep.ActualBlack8PocketIndex != *rep.DeclaredPocket {
+			return g.loseWith(res, shooter, opponent,
+				protocol.FoulBlackWrongPocket, protocol.ReasonWrongPocket), nil
 		}
 
 		if legal {
@@ -406,6 +414,8 @@ func FoulMessage(code string) string {
 		return "击球结果校验失败"
 	case protocol.FoulNoBankContact:
 		return "未碰库边也未进球，犯规"
+	case protocol.FoulBlackWrongPocket:
+		return "8号球未进入指定袋口"
 	default:
 		return ""
 	}

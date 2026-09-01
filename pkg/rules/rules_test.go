@@ -394,6 +394,57 @@ func TestRule5BlackEightDeclaredPocket(t *testing.T) {
 	}
 }
 
+// TestRule5BlackEightWrongPocket 测试黑8进错袋的判负逻辑（叫对袋但进错袋）
+func TestRule5BlackEightWrongPocket(t *testing.T) {
+	g := NewGame(DefaultOptions())
+	p1, _ := g.AddPlayer("p1", "Player1", "")
+	p2, _ := g.AddPlayer("p2", "Player2", "")
+	p1.Group = GroupSolid
+	g.CurrentTurn = p1.ID
+	g.IsBreakShot = false
+	g.Balls = NewRack()
+	for i := 1; i <= 7; i++ {
+		g.Balls[i].InPocket = true
+	}
+
+	declaredPocket := 0 // p1 叫的是 0 号袋
+	actualPocket := 3   // 但黑8实际进了 3 号袋
+
+	rep := ShotReport{
+		ShooterID:               p1.ID,
+		ShotNumber:              2,
+		FirstContactBall:        8,
+		PocketedBalls:           []int{8},
+		CueBallMoved:            true,
+		CushionAfterContact:     true,
+		DeclaredPocket:          &declaredPocket,
+		ActualBlack8PocketIndex: &actualPocket,
+		FinalBalls:              g.Balls[:],
+	}
+
+	res, err := g.ApplyShotResult(rep)
+	if err != nil {
+		t.Fatalf("ApplyShotResult failed: %v", err)
+	}
+
+	// 应该判负：叫对袋但进错袋
+	if res.GameStatus == protocol.GameStatusPlaying {
+		t.Fatalf("expected game to end, got status %s", res.GameStatus)
+	}
+	if res.WinnerID != p2.ID {
+		t.Errorf("expected p2 (opponent) to win, got winner %s", res.WinnerID)
+	}
+	if res.FoulType == nil || *res.FoulType != protocol.FoulBlackWrongPocket {
+		t.Errorf("expected foul %s, got %v", protocol.FoulBlackWrongPocket, res.FoulType)
+	}
+	if res.Reason != protocol.ReasonWrongPocket {
+		t.Errorf("expected reason %s, got %s", protocol.ReasonWrongPocket, res.Reason)
+	}
+	if res.NextPhase != protocol.PhaseGameOver {
+		t.Errorf("expected GameOver phase, got %s", res.NextPhase)
+	}
+}
+
 // TestFoulBallInHandOnlyWhenCueBallPocketed pins down GAME_RULES.md §犯规结果:
 //
 //	所有犯规的共同结果：

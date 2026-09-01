@@ -128,6 +128,7 @@ const (
 	FoulShotTimeout        = "SHOT_RESULT_TIMEOUT"    // no SHOT_RESULT in time
 	FoulIllegalReport      = "ILLEGAL_RESULT_REPORT"  // sim result failed checks
 	FoulNoBankContact      = "NO_BANK_CONTACT"        // must hit bank if no pocketed balls
+	FoulBlackWrongPocket   = "BLACK8_WRONG_POCKET"    // 8 pocketed but wrong pocket -> loss
 )
 
 // Overall game status, as in MULTIPLAYER_TECH.md §2.2.4.
@@ -156,6 +157,7 @@ const (
 	ReasonIllegalEightBall    = "illegal_eight_ball"
 	ReasonLegalEightBall      = "legal_eight_ball"
 	ReasonEightBallOutOfTable = "eight_ball_out_of_table"
+	ReasonWrongPocket         = "wrong_pocket"          // 8 in wrong pocket
 	ReasonRoomClosed          = "room_closed"
 )
 
