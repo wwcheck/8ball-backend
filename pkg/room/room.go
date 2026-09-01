@@ -742,6 +742,10 @@ func (r *Room) onMessage(playerID string, env protocol.Envelope, raw []byte) {
 		r.fail(playerID, env.MessageID, protocol.ErrNotInRoom, "你不在该房间内")
 		return
 	}
+	// 诊断日志：记录所有进入的消息
+	if env.Type == protocol.TypeShotResult {
+		log.Printf("[room %s] onMessage: 收到 %s from %s", r.ID, env.Type, playerID)
+	}
 	switch env.Type {
 	case protocol.TypeJoinGame:
 		r.handleJoinGame(playerID, env)
@@ -1022,9 +1026,12 @@ func (r *Room) handleStateFrame(playerID string, raw []byte, env protocol.Envelo
 func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelope) {
 	req, err := protocol.Decode[protocol.ShotResultReq](raw)
 	if err != nil {
+		log.Printf("[room %s] handleShotResult: 解析失败 %v", r.ID, err)
 		r.fail(playerID, env.MessageID, protocol.ErrBadRequest, err.Error())
 		return
 	}
+	log.Printf("[room %s] 接收到 SHOT_RESULT shot#%d from %s firstContact=%d pocketed=%v outOfBounds=%v cueMoved=%v",
+		r.ID, req.ShotNumber, playerID, req.FirstContactBall, req.PocketedBalls, req.OutOfBoundsBalls, req.CueBallMoved)
 	rep := rules.ShotReport{
 		ShooterID:           playerID,
 		ShotNumber:          req.ShotNumber,
@@ -1036,6 +1043,7 @@ func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelo
 		FinalBalls:          req.BallStates,
 	}
 	if err := r.game.ValidateShotResult(playerID, rep); err != nil {
+		log.Printf("[room %s] ValidateShotResult 失败: %v", r.ID, err)
 		r.metrics.ShotRejected()
 		r.failErr(playerID, env.MessageID, err)
 		// Resync the cheater/buggy client to the authoritative state.
@@ -1045,12 +1053,15 @@ func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelo
 		})
 		return
 	}
+	log.Printf("[room %s] ValidateShotResult 通过", r.ID)
 
 	res, err := r.game.ApplyShotResult(rep)
 	if err != nil {
+		log.Printf("[room %s] ApplyShotResult 失败: %v", r.ID, err)
 		r.failErr(playerID, env.MessageID, err)
 		return
 	}
+	log.Printf("[room %s] ApplyShotResult 成功 gameStatus=%s", r.ID, res.GameStatus)
 	r.publishStrikeResult(req.PocketedBalls, res)
 }
 
@@ -1065,10 +1076,21 @@ func (r *Room) publishStrikeResult(pocketed []int, res *protocol.StrikeResult) {
 	r.shotDeadline = time.Time{}
 	r.syncSummary()
 
+	ballStates := r.game.BallStates()
+	// 诊断日志：球位数据
+	log.Printf("[room %s] BALLS_STOPPED: shot=%d, phase=%s, balls=%d", r.ID, r.game.ShotNumber, r.game.Phase, len(ballStates))
+	for _, bs := range ballStates {
+		if !bs.InPocket {
+			log.Printf("  ball[%d]: pos=(%.4f, %.4f) vel=(%.4f, %.4f)", bs.BallID, bs.Position.X, bs.Position.Y, bs.Velocity.X, bs.Velocity.Y)
+		} else {
+			log.Printf("  ball[%d]: POCKETED", bs.BallID)
+		}
+	}
+
 	r.broadcast(&protocol.BallsStoppedResp{
 		Envelope:      protocol.Envelope{Type: protocol.TypeBallsStopped, PlayerID: res.StrikePlayerID},
 		ShotNumber:    r.game.ShotNumber,
-		BallStates:    r.game.BallStates(),
+		BallStates:    ballStates,
 		PocketedBalls: pocketed,
 		StrikeResult:  *res,
 		GamePhase:     r.game.Phase,
