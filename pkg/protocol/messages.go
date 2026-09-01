@@ -583,13 +583,16 @@ type CueBallPlacementAckResp struct {
 }
 
 // TurnChangeResp is an explicit turn notification (also implied by BALLS_STOPPED).
+// Includes full BallStates so clients can keep ball positions in sync; without it,
+// clients would lose ball state on timeout-triggered turn changes and reset all balls.
 type TurnChangeResp struct {
 	Envelope
-	CurrentPlayerID string `json:"currentPlayerId"`
-	GamePhase       string `json:"gamePhase"`
-	BallInHand      bool   `json:"ballInHand"`
-	KitchenOnly     bool   `json:"kitchenOnly"`
-	TurnTimeoutMs   int    `json:"turnTimeoutMs"`
+	CurrentPlayerID string      `json:"currentPlayerId"`
+	GamePhase       string      `json:"gamePhase"`
+	BallInHand      bool        `json:"ballInHand"`
+	KitchenOnly     bool        `json:"kitchenOnly"`
+	TurnTimeoutMs   int         `json:"turnTimeoutMs"`
+	BallStates      []BallState `json:"ballStates"`
 }
 
 // GameOverResp ends the game.

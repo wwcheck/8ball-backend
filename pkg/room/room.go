@@ -908,10 +908,13 @@ func (r *Room) handleReady(playerID string, raw []byte, env protocol.Envelope) {
 	}
 	p := r.game.PlayerByID(playerID)
 	p.Ready = req.Ready
+	log.Printf("[room %s] player %s ready=%v (p1.Ready=%v, p2.Ready=%v)", 
+		r.ID, playerID, req.Ready, r.game.Players[0].Ready, r.game.Players[1].Ready)
 	r.syncSummary()
 	r.broadcastRoomState()
 
 	if r.game.BothReady() {
+		log.Printf("[room %s] both players ready, starting game", r.ID)
 		r.startGame()
 	}
 }
@@ -944,6 +947,7 @@ func (r *Room) broadcastTurnChange() {
 		BallInHand:      r.game.BallInHand,
 		KitchenOnly:     r.game.KitchenOnly,
 		TurnTimeoutMs:   int(r.opts.TurnTimeout.Milliseconds()),
+		BallStates:      r.game.BallStates(),
 	})
 }
 
