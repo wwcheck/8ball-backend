@@ -157,7 +157,7 @@ const (
 	ReasonIllegalEightBall    = "illegal_eight_ball"
 	ReasonLegalEightBall      = "legal_eight_ball"
 	ReasonEightBallOutOfTable = "eight_ball_out_of_table"
-	ReasonWrongPocket         = "wrong_pocket"          // 8 in wrong pocket
+	ReasonWrongPocket         = "wrong_pocket" // 8 in wrong pocket
 	ReasonRoomClosed          = "room_closed"
 )
 
@@ -205,6 +205,10 @@ type BallState struct {
 	InPocket        bool    `json:"inPocket"`
 	IsMoving        bool    `json:"isMoving"`
 	OutOfBounds     bool    `json:"outOfBounds"`
+	RotationX       float64 `json:"rotationX"`
+	RotationY       float64 `json:"rotationY"`
+	RotationZ       float64 `json:"rotationZ"`
+	RotationW       float64 `json:"rotationW"`
 }
 
 // PlayerInfo is the per-player view shared in room/game snapshots. It describes
@@ -578,6 +582,7 @@ type CueBallPlacementAckResp struct {
 	Envelope
 	Status          string      `json:"status"` // "accepted"
 	GamePhase       string      `json:"gamePhase"`
+	BallInHand      bool        `json:"ballInHand"` // 是否仍处于手球状态（可继续调整摆球）
 	CurrentPlayerID string      `json:"currentPlayerId"`
 	BallStates      []BallState `json:"ballStates"`
 }

@@ -911,9 +911,21 @@ func (r *Room) handleReady(playerID string, raw []byte, env protocol.Envelope) {
 		return
 	}
 	p := r.game.PlayerByID(playerID)
+	if p == nil {
+		r.fail(playerID, env.MessageID, protocol.ErrNotSeated, "你当前不在座位上")
+		return
+	}
 	p.Ready = req.Ready
+	p1Ready := false
+	p2Ready := false
+	if len(r.game.Players) > 0 && r.game.Players[0] != nil {
+		p1Ready = r.game.Players[0].Ready
+	}
+	if len(r.game.Players) > 1 && r.game.Players[1] != nil {
+		p2Ready = r.game.Players[1].Ready
+	}
 	log.Printf("[room %s] player %s ready=%v (p1.Ready=%v, p2.Ready=%v)", 
-		r.ID, playerID, req.Ready, r.game.Players[0].Ready, r.game.Players[1].Ready)
+		r.ID, playerID, req.Ready, p1Ready, p2Ready)
 	r.syncSummary()
 	r.broadcastRoomState()
 
@@ -956,12 +968,16 @@ func (r *Room) broadcastTurnChange() {
 }
 
 func (r *Room) handleShoot(playerID string, raw []byte, env protocol.Envelope) {
+	log.Printf("[room %s] handleShoot: 接收到 SHOOT 消息 from %s", r.ID, playerID)
 	req, err := protocol.Decode[protocol.ShootReq](raw)
 	if err != nil {
+		log.Printf("[room %s] handleShoot: 解析失败 %v", r.ID, err)
 		r.fail(playerID, env.MessageID, protocol.ErrBadRequest, err.Error())
 		return
 	}
+	log.Printf("[room %s] handleShoot: 击球参数 cueAngle=%.4f power=%.4f spin=%v", r.ID, req.CueAngle, req.Power, req.Spin)
 	if err := r.game.ValidateShoot(playerID, req.CueAngle, req.Power, req.Spin); err != nil {
+		log.Printf("[room %s] handleShoot: ValidateShoot 失败 %v", r.ID, err)
 		r.metrics.ShotRejected()
 		code, msg := protocol.ErrInvalidShot, err.Error()
 		if ge, ok := err.(*protocol.GameError); ok {
@@ -978,8 +994,10 @@ func (r *Room) handleShoot(playerID string, raw []byte, env protocol.Envelope) {
 		r.fail(playerID, env.MessageID, code, msg)
 		return
 	}
+	log.Printf("[room %s] handleShoot: ValidateShoot 通过", r.ID)
 
 	shotNo := r.game.ApplyShoot(playerID, req.CueAngle, req.Power, req.Spin)
+	log.Printf("[room %s] handleShoot: ApplyShoot 成功 shotNo=%d", r.ID, shotNo)
 	r.metrics.ShotAccepted()
 	r.turnDeadline = time.Time{}
 	r.shotDeadline = time.Now().Add(r.opts.ShotTimeout)
@@ -1107,15 +1125,20 @@ func (r *Room) publishStrikeResult(pocketed []int, res *protocol.StrikeResult) {
 }
 
 func (r *Room) handlePlacement(playerID string, raw []byte, env protocol.Envelope) {
+	log.Printf("[room %s] handlePlacement: 接收到 CueBallPlacement 消息 from %s", r.ID, playerID)
 	req, err := protocol.Decode[protocol.CueBallPlacementReq](raw)
 	if err != nil {
+		log.Printf("[room %s] handlePlacement: 解析失败 %v", r.ID, err)
 		r.fail(playerID, env.MessageID, protocol.ErrBadRequest, err.Error())
 		return
 	}
+	log.Printf("[room %s] handlePlacement: 白球位置 (%.4f, %.4f, %.4f)", r.ID, req.Position.X, req.Position.Y, req.Position.Z)
 	if err := r.game.ValidatePlacement(playerID, req.Position); err != nil {
+		log.Printf("[room %s] handlePlacement: ValidatePlacement 失败 %v", r.ID, err)
 		r.failErr(playerID, env.MessageID, err)
 		return
 	}
+	log.Printf("[room %s] handlePlacement: ValidatePlacement 通过", r.ID)
 	r.game.ApplyPlacement(req.Position)
 	r.turnDeadline = time.Now().Add(r.opts.TurnTimeout)
 	r.syncSummary()
@@ -1124,9 +1147,11 @@ func (r *Room) handlePlacement(playerID string, raw []byte, env protocol.Envelop
 		Envelope:        protocol.Envelope{Type: protocol.TypeCueBallPlacementAck, PlayerID: playerID, MessageID: env.MessageID},
 		Status:          "accepted",
 		GamePhase:       r.game.Phase,
+		BallInHand:      r.game.BallInHand,
 		CurrentPlayerID: r.game.CurrentTurn,
 		BallStates:      r.game.BallStates(),
 	}
+	log.Printf("[room %s] handlePlacement: 广播 CueBallPlacementAckResp 给所有客户端", r.ID)
 	// Both clients need the confirmed cue ball position, not just the placer.
 	r.broadcast(ack)
 }
@@ -1227,7 +1252,13 @@ func (r *Room) onTick(now time.Time) {
 	// 2. room TTL (waiting rooms nobody joins / finished rooms nobody reads)
 	if !r.expiresAt.IsZero() && now.After(r.expiresAt) {
 		switch r.status {
-		case protocol.RoomStatusWaiting, protocol.RoomStatusReady, protocol.RoomStatusFinished:
+		case protocol.RoomStatusWaiting:
+			// 只在房间完全空闲时才关闭（没有上座玩家，也没有观众）
+			if r.game.Seated() == 0 && len(r.spectators) == 0 {
+				r.closeRoom(protocol.ReasonRoomClosed)
+				return
+			}
+		case protocol.RoomStatusReady, protocol.RoomStatusFinished:
 			r.closeRoom(protocol.ReasonRoomClosed)
 			return
 		}

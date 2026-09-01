@@ -29,7 +29,8 @@ func NewRack() [protocol.BallCount]protocol.BallState {
 	var balls [protocol.BallCount]protocol.BallState
 
 	for id := 0; id < protocol.BallCount; id++ {
-		balls[id] = protocol.BallState{BallID: id}
+		// RotationW=1：初始摆位为单位四元数（数字朝上基准，与客户端 ResetBall 对齐）
+		balls[id] = protocol.BallState{BallID: id, RotationW: 1}
 	}
 
 	// Cue ball on the head spot, inside the kitchen.

@@ -57,9 +57,11 @@ func (g *Game) ApplyPlacement(pos protocol.Vector3) {
 	cue.InPocket = false
 	cue.OutOfBounds = false
 	cue.IsMoving = false
-	g.BallInHand = false
-	g.KitchenOnly = false
+	// 【2026-09-01 修复】摆球后只改 Phase，BallInHand 保持 true
+	// 让用户继续可以拖调整白球，直到击球时才改 BallInHand=false
 	g.Phase = protocol.PhaseAiming
+	// 注意：g.BallInHand 保持 true，不在这里改！
+	g.KitchenOnly = false
 }
 
 // ---------------------------------------------------------------------------

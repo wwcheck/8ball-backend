@@ -51,9 +51,11 @@ func (g *Game) ValidatePlacement(playerID string, pos protocol.Vector3) error {
 	if err := g.requireActiveTurn(playerID); err != nil {
 		return err
 	}
-	if g.Phase != protocol.PhaseBallInHand || !g.BallInHand {
+	// 【2026-09-01 修复】用户拖球期间 BallInHand=true，应该接受摆球位置
+	// 无论当前 Phase 是什么（可能已经变成 Aiming 了），只要 BallInHand=true 就说明用户还在拖
+	if !g.BallInHand {
 		return protocol.Errf(protocol.ErrNotBallInHand,
-			"当前阶段 %s 不允许摆放白球", g.Phase)
+			"当前不允许摆放白球（BallInHand=false）")
 	}
 	if math.IsNaN(pos.X) || math.IsNaN(pos.Z) ||
 		math.IsInf(pos.X, 0) || math.IsInf(pos.Z, 0) {
