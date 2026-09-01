@@ -104,23 +104,29 @@ func (g *Game) ApplyShotResult(rep ShotReport) (*protocol.StrikeResult, error) {
 			protocol.FoulBlackOutOfBounds, protocol.ReasonEightBallOutOfTable), nil
 	}
 	if blackPocketed {
+		// 黑8与白球同杆进袋/出台。放在开球分支之前：两者都是判负，但
+		// FoulBlackWithCue 同时描述了「黑8进袋」和「白球也进了/出台」两个
+		// 事实，信息量更大，对开球和非开球一视同仁。
 		if cuePocketed || cueOOB {
 			return g.loseWith(res, shooter, opponent,
 				protocol.FoulBlackWithCue, protocol.ReasonIllegalEightBall), nil
 		}
 
-		// Rule #4: 开球黑8豁免 - 开球进黑8不算输，重新开
+		// GAME_RULES.md §特殊情况 1「开球后直接进黑8」:
+		//   开局 && 黑8进袋 -> 输("开局进8号"); 游戏立即结束; 对手获胜。
+		//
+		// PROJECT RULE: 这里与 WPA 官方口径相反。WPA 把开球进黑8当作「本杆
+		// 作废、重置白球、换对手、进入 BallInHand」，本仓库曾实现过那一版，
+		// 已按产品决策（2026-08-31）移除，以 GAME_RULES.md 为准。
+		//
+		// 文档内层还有一句 if (黑8是本轮第一个进球)。开球杆上这个条件恒为
+		// 真（开球杆之前没有任何进球），所以未单独建模；即使黑8不是本杆第
+		// 一个进球，落到下面的通用分支也会因为开球时双方分组未定
+		// （clearedBefore == false -> legal == false）而同样判负，结论一致。
 		if g.IsBreakShot {
-			g.resetCueBall()
-			g.CurrentTurn = opponent.ID
-			g.BallInHand = true
-			g.KitchenOnly = g.opts.KitchenOnlyBallInHand
-			g.Phase = protocol.PhaseBallInHand
-			res.FoulMessage = "开球进黑8，本杆作废"
-			res.NextPhase = g.Phase
-			res.NextPlayerID = g.CurrentTurn
-			res.BallInHand = g.BallInHand
-			res.KitchenOnly = g.KitchenOnly
+			g.loseWith(res, shooter, opponent,
+				protocol.FoulBlackPocketedEarly, protocol.ReasonIllegalEightBall)
+			res.FoulMessage = "开球进黑8，判负"
 			return res, nil
 		}
 

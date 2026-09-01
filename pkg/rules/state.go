@@ -417,6 +417,12 @@ func (g *Game) finish(winner, loser *Player, reason string) {
 	g.EndReason = reason
 	g.BallInHand = false
 	g.KitchenOnly = false
+	// 终局必须清干净所有进行中状态：Snapshot() 会把 IsBreakShot 带进终局快照
+	// 推给客户端（结算画面、观战态）。开球进黑八判负这条路径不经过
+	// ApplyShotResult 末尾的 g.IsBreakShot = false（engine.go），若不在终局
+	// 统一复位，那一局的终局快照会残留 IsBreakShot=true，客户端据此做的
+	// 任何判断（如"是否显示重开按钮"）都会走错分支。
+	g.IsBreakShot = false
 	g.EndedAt = time.Now()
 }
 

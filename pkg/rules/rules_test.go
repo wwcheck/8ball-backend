@@ -47,47 +47,277 @@ func TestRule3BankContact(t *testing.T) {
 	}
 }
 
-// TestRule4OpeningBreakBlackEight 测试规则 #4：开球黑8豁免
-func TestRule4OpeningBreakBlackEight(t *testing.T) {
-	g := NewGame(DefaultOptions())
-	p1, _ := g.AddPlayer("p1", "Player1", "")
-	p2, _ := g.AddPlayer("p2", "Player2", "")
-	g.CurrentTurn = p1.ID
-	g.IsBreakShot = true
-
-	// 初始化球的状态
-	g.Balls = NewRack()
-
-	rep := ShotReport{
-		ShooterID:           p1.ID,
-		ShotNumber:          1,
-		FirstContactBall:    2,
-		PocketedBalls:       []int{8}, // 开球进黑8
-		CueBallMoved:        true,
-		CushionAfterContact: true,
-		FinalBalls:          g.Balls[:],
+// TestSpecialCase1BreakShotEightBallLoses pins down GAME_RULES.md §特殊情况 1
+// 「开球后直接进黑8」:
+//
+//	if (开局 && 黑8进袋) { 输("开局进8号"); 对手赢() }
+//
+// 游戏立即结束，开球方失败、对手获胜。
+//
+// 这是 PROJECT RULE，与 WPA 官方口径相反：WPA 会判「本杆作废、重置白球、
+// 换对手、进入 BallInHand 阶段」。本仓库曾用 TestRule4OpeningBreakBlackEight
+// 断言过那一版 WPA 行为，现按产品决策（2026-08-31）以 GAME_RULES.md 为准，
+// 该测试被本测试取代。
+func TestSpecialCase1BreakShotEightBallLoses(t *testing.T) {
+	cases := []struct {
+		name         string
+		pocketed     []int
+		outOfBounds  []int
+		wantFoul    string
+		wantMessage string
+	}{
+		{
+			name:        "开球进黑8，白球安全 -> 判负",
+			pocketed:    []int{protocol.EightBallID},
+			wantFoul:    protocol.FoulBlackPocketedEarly,
+			wantMessage: "开球进黑8，判负",
+		},
+		{
+			name:        "开球进黑8，白球同时进袋 -> 判负",
+			pocketed:    []int{protocol.CueBallID, protocol.EightBallID},
+			wantFoul:    protocol.FoulBlackWithCue,
+			wantMessage: FoulMessage(protocol.FoulBlackWithCue),
+		},
+		{
+			name:        "开球进黑8，白球同时出台 -> 判负",
+			pocketed:    []int{protocol.EightBallID},
+			outOfBounds: []int{protocol.CueBallID},
+			wantFoul:    protocol.FoulBlackWithCue,
+			wantMessage: FoulMessage(protocol.FoulBlackWithCue),
+		},
+		{
+			// 文档内层条件 if (黑8是本轮第一个进球) 的边界：黑8不是本杆第一
+			// 个进球时文档没有明说判什么。开球杆上双方分组未定，落到通用分支
+			// 也会因为 legal == false 而判负，结论一致，这里把它固定下来。
+			name:        "开球黑8不是本杆第一个进球 -> 仍判负",
+			pocketed:    []int{1, protocol.EightBallID},
+			wantFoul:    protocol.FoulBlackPocketedEarly,
+			wantMessage: "开球进黑8，判负",
+		},
 	}
 
-	res, err := g.ApplyShotResult(rep)
-	if err != nil {
-		t.Errorf("ApplyShotResult failed: %v", err)
-		return
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGame(DefaultOptions())
+			p1, _ := g.AddPlayer("p1", "Player1", "")
+			p2, _ := g.AddPlayer("p2", "Player2", "")
+			g.CurrentTurn = p1.ID
+			g.IsBreakShot = true
+			g.Balls = NewRack()
 
-	// 开球进黑8不应该立即结束游戏，应该重新开
-	if res.GameStatus != protocol.GameStatusPlaying {
-		t.Errorf("game should still be playing, but got status %s", res.GameStatus)
-	}
+			rep := ShotReport{
+				ShooterID:           p1.ID,
+				ShotNumber:          1,
+				FirstContactBall:    2,
+				PocketedBalls:       tc.pocketed,
+				OutOfBoundsBalls:    tc.outOfBounds,
+				CueBallMoved:        true,
+				CushionAfterContact: true,
+				FinalBalls:          g.Balls[:],
+			}
 
-	// 应该转移到对手，且进入 BallInHand 阶段
-	if res.NextPlayerID != p2.ID {
-		t.Errorf("expected next player to be p2, got %s", res.NextPlayerID)
-	}
+			res, err := g.ApplyShotResult(rep)
+			if err != nil {
+				t.Fatalf("ApplyShotResult failed: %v", err)
+			}
 
-	if res.NextPhase != protocol.PhaseBallInHand {
-		t.Errorf("expected BallInHand phase, got %s", res.NextPhase)
+			// 游戏必须立即结束，开球方 p1 失败、对手 p2 获胜。
+			if res.GameStatus == protocol.GameStatusPlaying {
+				t.Fatalf("game must end on a break-shot 8-ball, got status %s", res.GameStatus)
+			}
+			if res.GameStatus != protocol.GameStatusP2Wins {
+				t.Errorf("expected p2 (the opponent) to win, got status %s", res.GameStatus)
+			}
+			if res.WinnerID != p2.ID {
+				t.Errorf("expected winner p2, got %q", res.WinnerID)
+			}
+			if g.LoserID != p1.ID {
+				t.Errorf("expected loser p1, got %q", g.LoserID)
+			}
+			if res.Reason != protocol.ReasonIllegalEightBall {
+				t.Errorf("expected reason %s, got %s", protocol.ReasonIllegalEightBall, res.Reason)
+			}
+			if res.NextPhase != protocol.PhaseGameOver {
+				t.Errorf("expected GameOver phase, got %s", res.NextPhase)
+			}
+
+			// 判负不是「本杆作废」，绝不能进入 BallInHand / 换人。
+			if res.NextPlayerID != "" {
+				t.Errorf("a lost game must not schedule a next player, got %q", res.NextPlayerID)
+			}
+			if res.BallInHand {
+				t.Errorf("a lost game must not grant ball-in-hand")
+			}
+			if !g.Finished() {
+				t.Errorf("expected the game to be finished")
+			}
+			// 终局快照不能残留 IsBreakShot=true，否则客户端结算画面/观战态
+			// 拿这个字段做判断时会走错分支。复位发生在 finish() 里，对所有
+			// 终局路径（判负 / 合法获胜 / 认输 / 弃权）统一生效。
+			if g.IsBreakShot {
+				t.Errorf("a finished game must not report IsBreakShot = true")
+			}
+			if g.Snapshot().IsBreakShot {
+				t.Errorf("the final snapshot must not report IsBreakShot = true")
+			}
+
+			if res.FoulType == nil {
+				t.Fatalf("expected a foul code, got nil")
+			}
+			if *res.FoulType != tc.wantFoul {
+				t.Errorf("expected foul %s, got %s", tc.wantFoul, *res.FoulType)
+			}
+			if res.FoulMessage != tc.wantMessage {
+				t.Errorf("expected foul message %q, got %q", tc.wantMessage, res.FoulMessage)
+			}
+		})
 	}
 }
+
+// TestNonBreakEightBallArbitrationUnchanged 是回归守卫：确认把开球进黑8改成
+// 判负之后，「非开球时进黑8」的四条原有判定没有被破坏。
+func TestNonBreakEightBallArbitrationUnchanged(t *testing.T) {
+	// clearedGroup 为真时，先把 1-7 号（p1 的全色组）全部标记为已进袋，
+	// 让 p1 处于「打完己方球、可以合法击打黑8」的状态。
+	newGame := func(clearedGroup bool) (*Game, *Player, *Player) {
+		g := NewGame(DefaultOptions())
+		p1, _ := g.AddPlayer("p1", "Player1", "")
+		p2, _ := g.AddPlayer("p2", "Player2", "")
+		p1.Group = GroupSolid
+		p2.Group = GroupStripe
+		g.CurrentTurn = p1.ID
+		g.IsBreakShot = false
+		g.Balls = NewRack()
+		if clearedGroup {
+			for i := 1; i <= 7; i++ {
+				g.Balls[i].InPocket = true
+			}
+		}
+		return g, p1, p2
+	}
+
+	cases := []struct {
+		name        string
+		cleared     bool
+		firstHit    int
+		pocketed    []int
+		declared    *int
+		wantFoul    string
+		wantWinner  int // 1 = p1 赢, 2 = p2 赢
+		wantReason  string
+		wantPlaying bool
+	}{
+		{
+			name:        "己方球未清完就进黑8 -> 判负 (BLACK_POCKETED_EARLY)",
+			cleared:     false,
+			firstHit:    protocol.EightBallID,
+			pocketed:    []int{protocol.EightBallID},
+			wantFoul:    protocol.FoulBlackPocketedEarly,
+			wantWinner:  2,
+			wantReason:  protocol.ReasonIllegalEightBall,
+			wantPlaying: false,
+		},
+		{
+			name:        "清完己方球、先碰黑8、叫袋 -> p1 合法获胜",
+			cleared:     true,
+			firstHit:    protocol.EightBallID,
+			pocketed:    []int{protocol.EightBallID},
+			declared:    intPtr(0),
+			wantWinner:  1,
+			wantReason:  protocol.ReasonLegalEightBall,
+			wantPlaying: false,
+		},
+		{
+			name:        "清完己方球、进黑8但未叫袋 -> 判负",
+			cleared:     true,
+			firstHit:    protocol.EightBallID,
+			pocketed:    []int{protocol.EightBallID},
+			declared:    nil,
+			wantFoul:    protocol.FoulWrongBall,
+			wantWinner:  2,
+			wantReason:  protocol.ReasonIllegalEightBall,
+			wantPlaying: false,
+		},
+		{
+			name:        "清完己方球、先碰黑8、但白球同时进袋 -> 判负 (BLACK_WITH_CUE)",
+			cleared:     true,
+			firstHit:    protocol.EightBallID,
+			pocketed:    []int{protocol.CueBallID, protocol.EightBallID},
+			declared:    intPtr(0),
+			wantFoul:    protocol.FoulBlackWithCue,
+			wantWinner:  2,
+			wantReason:  protocol.ReasonIllegalEightBall,
+			wantPlaying: false,
+		},
+		{
+			// 黑8没进，只是先碰到了黑8（己方球已清完）-> 不犯规、不结束，
+			// 未进球所以换人。这条最容易在改 blackPocketed 分支时被误伤。
+			name:        "己方球清完后先碰黑8但没进 -> 普通犯规判定，游戏继续",
+			cleared:     true,
+			firstHit:    protocol.EightBallID,
+			pocketed:    []int{},
+			wantPlaying: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, p1, p2 := newGame(tc.cleared)
+
+			rep := ShotReport{
+				ShooterID:           p1.ID,
+				ShotNumber:          2,
+				FirstContactBall:    tc.firstHit,
+				PocketedBalls:       tc.pocketed,
+				CueBallMoved:        true,
+				CushionAfterContact: true,
+				DeclaredPocket:      tc.declared,
+				FinalBalls:          g.Balls[:],
+			}
+
+			res, err := g.ApplyShotResult(rep)
+			if err != nil {
+				t.Fatalf("ApplyShotResult failed: %v", err)
+			}
+
+			wantWinner := p1.ID
+			if tc.wantWinner == 2 {
+				wantWinner = p2.ID
+			}
+
+			if tc.wantPlaying {
+				if res.GameStatus != protocol.GameStatusPlaying {
+					t.Fatalf("expected the game to continue, got status %s", res.GameStatus)
+				}
+				if res.NextPlayerID == "" {
+					t.Errorf("expected a next player to be scheduled")
+				}
+				return
+			}
+
+			if res.GameStatus == protocol.GameStatusPlaying {
+				t.Fatalf("expected the game to end, got status %s", res.GameStatus)
+			}
+			if res.WinnerID != wantWinner {
+				t.Errorf("expected winner %s, got %q", wantWinner, res.WinnerID)
+			}
+			if res.Reason != tc.wantReason {
+				t.Errorf("expected reason %s, got %s", tc.wantReason, res.Reason)
+			}
+			if tc.wantFoul == "" {
+				if res.FoulType != nil && *res.FoulType != protocol.FoulNone {
+					t.Errorf("expected no foul, got %s", *res.FoulType)
+				}
+				return
+			}
+			if res.FoulType == nil || *res.FoulType != tc.wantFoul {
+				t.Errorf("expected foul %s, got %v", tc.wantFoul, res.FoulType)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int { return &v }
 
 // TestRule5BlackEightDeclaredPocket 测试规则 #5：黑8叫袋
 func TestRule5BlackEightDeclaredPocket(t *testing.T) {
