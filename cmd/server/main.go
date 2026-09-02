@@ -88,7 +88,7 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:    "localhost:8080",
+		Addr:    "0.0.0.0:8080",
 		Handler: router,
 		// ReadHeaderTimeout bounds only the request-header phase, so it defends
 		// the plain HTTP endpoints against slowloris-style stalls without ever
