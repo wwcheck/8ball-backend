@@ -19,10 +19,27 @@ const (
 	roomIDLen     = 12
 )
 
-// fixedRoomID is the well-known room number the client hard-codes ("1000").
-// It is a fixed *room number*, not a fixed *room instance*: the room may TTL
-// close when empty and be lazily recreated the next time someone joins "1000".
+// fixedRoomID is the default room number the client uses ("1000"). It is a
+// plain, legal room number now: like any other digit-only id it is lazily
+// created on first join and may TTL close when empty. Kept only for the client
+// default and for tests; JoinRoom no longer special-cases it.
 const fixedRoomID = "1000"
+
+// validRoomID reports whether id is a legal user-entered room number:
+// 1..roomIDLen decimal digits. Internal auto-generated ids ("room_...") never
+// pass through this check — they only reach JoinRoom via the reconnect path,
+// where the room already exists and is joined before any validation.
+func validRoomID(id string) bool {
+	if id == "" || len(id) > roomIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < '0' || id[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // Manager is the process-wide room registry plus the quick-match queue.
 //
@@ -176,9 +193,11 @@ func (m *Manager) CreateRoom(c Client, isPublic bool) (*Room, int, error) {
 // JoinRoom joins (or resumes) a player in an existing room. Exactly one of
 // roomID / inviteCode needs to be supplied; roomID wins when both are present.
 //
-// The fixed room number "1000" is special-cased: if it does not exist yet, it is
-// lazily created so clients that hard-code roomId:"1000" can enter without an
-// invite code. The fixed number stays stable across room close/recreate.
+// Any legal room number is lazily created on first join: user A entering "8888"
+// creates/joins the room, and user B entering "8888" joins the same room. The
+// number stays stable across room close/recreate (an empty room TTL-closes and
+// is recreated the next time someone joins the same number). Invalid room
+// numbers (empty, non-digit, or longer than roomIDLen) are rejected.
 func (m *Manager) JoinRoom(c Client, roomID, inviteCode string) (*Room, int, bool, error) {
 	pid := c.PlayerID()
 	code := strings.ToUpper(strings.TrimSpace(inviteCode))
@@ -196,17 +215,22 @@ func (m *Manager) JoinRoom(c Client, roomID, inviteCode string) (*Room, int, boo
 	bound := m.bound[pid]
 	m.mu.RUnlock()
 
-	if r == nil && roomID == fixedRoomID {
-		// 懒创建固定房间号 "1000"：固定的是房间号，不是房间实例。
+	if r == nil && roomID != "" {
+		// 懒创建任意合法房间号。校验只对"新建"生效：已存在的房间（含内部
+		// 生成 id 的断线重连路径）直接复用，不校验格式。
+		if !validRoomID(roomID) {
+			return nil, 0, false, protocol.Errf(protocol.ErrBadRequest,
+				"房间号不合法：需为 1-%d 位纯数字", roomIDLen)
+		}
 		m.mu.Lock()
-		r = m.rooms[fixedRoomID]
+		r = m.rooms[roomID]
 		if r == nil {
-			if b := m.bound[pid]; b != "" && b != fixedRoomID {
+			if b := m.bound[pid]; b != "" && b != roomID {
 				m.mu.Unlock()
 				return nil, 0, false, protocol.Errf(protocol.ErrAlreadyInRoom, "你已在房间 %s 中，请先退出", b)
 			}
-			r = m.newRoomWithIDLocked(fixedRoomID, "", false)
-			log.Printf("[mgr] lazily created fixed room %s", fixedRoomID)
+			r = m.newRoomWithIDLocked(roomID, "", false)
+			log.Printf("[mgr] lazily created room %s", roomID)
 		}
 		bound = m.bound[pid]
 		m.mu.Unlock()
@@ -381,7 +405,8 @@ func (m *Manager) newRoomLocked(invite string, isPublic bool) *Room {
 }
 
 // newRoomWithIDLocked registers and starts a room with a caller-chosen id
-// (used by the fixed room number "1000"). Caller holds mu.
+// (used by user-entered room numbers, e.g. "8888" or the default "1000").
+// Caller holds mu.
 func (m *Manager) newRoomWithIDLocked(id, invite string, isPublic bool) *Room {
 	r := newRoom(id, invite, isPublic, m.opts, m, m.metrics)
 	m.rooms[id] = r
