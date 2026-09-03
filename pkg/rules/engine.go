@@ -350,6 +350,10 @@ func (g *Game) commitBalls(rep ShotReport) {
 		}
 		cur := &g.Balls[rb.BallID]
 		cur.Position = rb.Position
+		cur.RotationX = rb.RotationX
+		cur.RotationY = rb.RotationY
+		cur.RotationZ = rb.RotationZ
+		cur.RotationW = rb.RotationW
 		cur.Velocity = protocol.Vector3{}
 		cur.AngularVelocity = protocol.Vector3{}
 		cur.IsMoving = false
