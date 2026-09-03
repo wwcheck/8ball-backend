@@ -6,9 +6,9 @@ import "github.com/yourgame/8ball-backend/pkg/protocol"
 // (+X), the 8 ball sits in the middle of the third row, and rows are spaced by
 // one ball diameter (GAME_RULES.md §初始排列).
 const (
-	rackApexX = 0.71                       // apex ball centre
-	rowGap    = protocol.BallRadius * 1.74 // ~sqrt(3)*r spacing between rows
-	colGap    = protocol.BallRadius * 2.0  // ball diameter within a row
+	rackApexX = 0.8                              // apex ball centre (matches Unity rackStart.x = 0.8)
+	rowGap    = protocol.BallRadius * 1.7320508  // sqrt(3)*r spacing between rows (Unity dx = diameter*0.866)
+	colGap    = protocol.BallRadius * 2.0        // ball diameter within a row (matches Unity z step)
 )
 
 // rackOrder is the ball id placed at each triangle slot, row by row.
