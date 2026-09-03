@@ -13,7 +13,11 @@ import (
 // webRoot is where the Unity WebGL build is unpacked on the origin server.
 // EdgeOne (the CDN) back-origins to :8080, so the Go process must serve
 // index.html, /Build/* and /TemplateData/* itself.
-const webRoot = "/data/8ball-backend/web"
+//
+// Kept in a standalone directory (/data/8ball-web) separate from the backend
+// source tree (/data/8ball-backend), so the deploy script that syncs backend
+// sources never touches the (large, pre-compressed) web build.
+const webRoot = "/data/8ball-web"
 
 // registerWebGL mounts the Unity WebGL static-file routes. Kept in its own
 // file so the WebGL serving rules (gzip passthrough + wasm/js MIME) live in
