@@ -87,6 +87,9 @@ func main() {
 		gw.HandleWS(c.Writer, c.Request)
 	})
 
+	// Unity WebGL static files (index.html + /Build/* + /TemplateData/*).
+	registerWebGL(router)
+
 	srv := &http.Server{
 		Addr:    "0.0.0.0:8080",
 		Handler: router,
