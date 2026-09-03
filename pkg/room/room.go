@@ -132,6 +132,18 @@ type event struct {
 	reply    chan joinResult
 }
 
+// shotCollector gathers the two ends' SHOT_RESULT for the in-flight shot.
+// The shooter's report is authoritative and arbitrates the shot; the observer's
+// (non-shooter) report is collected only to compare against it. It is loop-owned
+// like every other piece of mutable room state.
+type shotCollector struct {
+	shooter  *rules.ShotReport
+	observer *rules.ShotReport
+	// env is the shooter's envelope, kept so ApplyShotResult errors can be
+	// reported back to the shooter when arbitration is deferred.
+	env protocol.Envelope
+}
+
 // Room is one match: two seats, one authoritative game, one goroutine.
 type Room struct {
 	ID         string
@@ -155,11 +167,12 @@ type Room struct {
 	spectators   map[string]*spectator
 	dcDeadline   map[string]time.Time
 	seq          uint64
-	turnDeadline time.Time
-	shotDeadline time.Time
-	expiresAt    time.Time
-	startedAt    time.Time
-	closed       bool
+	turnDeadline  time.Time
+	shotDeadline  time.Time
+	expiresAt     time.Time
+	startedAt     time.Time
+	closed        bool
+	shotCollector *shotCollector
 
 	summaryMu sync.RWMutex
 	summary   Summary
@@ -942,6 +955,7 @@ func (r *Room) startGame() {
 	r.startedAt = now
 	r.turnDeadline = now.Add(r.opts.TurnTimeout)
 	r.shotDeadline = time.Time{}
+	r.shotCollector = nil
 	r.expiresAt = time.Time{}
 	r.metrics.GameStarted()
 	r.syncSummary()
@@ -1000,6 +1014,7 @@ func (r *Room) handleShoot(playerID string, raw []byte, env protocol.Envelope) {
 	log.Printf("[room %s] handleShoot: ApplyShoot 成功 shotNo=%d", r.ID, shotNo)
 	r.metrics.ShotAccepted()
 	r.turnDeadline = time.Time{}
+	r.shotCollector = nil
 	r.shotDeadline = time.Now().Add(r.opts.ShotTimeout)
 	r.syncSummary()
 
@@ -1050,6 +1065,7 @@ func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelo
 	}
 	log.Printf("[room %s] 接收到 SHOT_RESULT shot#%d from %s firstContact=%d pocketed=%v outOfBounds=%v cueMoved=%v",
 		r.ID, req.ShotNumber, playerID, req.FirstContactBall, req.PocketedBalls, req.OutOfBoundsBalls, req.CueBallMoved)
+
 	rep := rules.ShotReport{
 		ShooterID:           playerID,
 		ShotNumber:          req.ShotNumber,
@@ -1060,6 +1076,26 @@ func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelo
 		CushionAfterContact: req.CushionAfterContact,
 		FinalBalls:          req.BallStates,
 	}
+
+	// 击球方（CurrentTurn）上报：照常完整校验 + 收集后仲裁。
+	if playerID == r.game.CurrentTurn {
+		r.handleShooterResult(playerID, rep, env)
+		return
+	}
+	// 非击球方（对手）上报：只收集用于比对，不立即仲裁。
+	if opp := r.game.Opponent(r.game.CurrentTurn); opp != nil && playerID == opp.ID {
+		r.handleObserverResult(rep)
+		return
+	}
+	// 既非击球方也非对手（理论上 onMessage 已挡观众）：直接拒绝。
+	r.fail(playerID, env.MessageID, protocol.ErrNotSeated, "你当前不是对局玩家")
+}
+
+// handleShooterResult validates and stores the shooter's settled result. It
+// does not arbitrate immediately: it waits for the observer's mirrored result
+// so the two ends can be compared. The shotDeadline (set in handleShoot)
+// provides the fallback when the observer never reports.
+func (r *Room) handleShooterResult(playerID string, rep rules.ShotReport, env protocol.Envelope) {
 	if err := r.game.ValidateShotResult(playerID, rep); err != nil {
 		log.Printf("[room %s] ValidateShotResult 失败: %v", r.ID, err)
 		r.metrics.ShotRejected()
@@ -1073,14 +1109,83 @@ func (r *Room) handleShotResult(playerID string, raw []byte, env protocol.Envelo
 	}
 	log.Printf("[room %s] ValidateShotResult 通过", r.ID)
 
-	res, err := r.game.ApplyShotResult(rep)
+	if r.shotCollector == nil {
+		r.shotCollector = &shotCollector{}
+	}
+	if r.shotCollector.shooter != nil {
+		// 击球方重复上报（重传）：幂等忽略。
+		log.Printf("[room %s] 击球方 %s 重复上报 SHOT_RESULT，忽略", r.ID, playerID)
+		return
+	}
+	cp := rep
+	r.shotCollector.shooter = &cp
+	r.shotCollector.env = env
+	log.Printf("[room %s] 收集到击球方 SHOT_RESULT shot#%d，等待观察方结果", r.ID, rep.ShotNumber)
+
+	if r.shotCollector.observer != nil {
+		r.finalizeShotResult()
+	}
+}
+
+// handleObserverResult stores the non-shooter's mirrored result for comparison.
+// It never arbitrates; a structurally invalid observer report is only logged.
+func (r *Room) handleObserverResult(rep rules.ShotReport) {
+	if err := r.game.ValidateObserverShotResult(rep); err != nil {
+		// 观察方结果仅供参考：结构非法只告警不拒绝，仍走击球方兜底。
+		log.Printf("[room %s] 观察方 SHOT_RESULT 结构校验失败（仅告警）: %v", r.ID, err)
+		return
+	}
+	if r.shotCollector == nil {
+		r.shotCollector = &shotCollector{}
+	}
+	if r.shotCollector.observer != nil {
+		log.Printf("[room %s] 观察方重复上报 SHOT_RESULT，忽略", r.ID)
+		return
+	}
+	cp := rep
+	r.shotCollector.observer = &cp
+	log.Printf("[room %s] 收集到观察方 SHOT_RESULT shot#%d", r.ID, rep.ShotNumber)
+
+	if r.shotCollector.shooter != nil {
+		r.finalizeShotResult()
+	}
+}
+
+// finalizeShotResult compares the two ends (when both are present) and
+// arbitrates with the shooter's report. Inconsistencies only produce a warning
+// log — the shooter always wins per the product decision. It is also the
+// single-end fallback when the observer timed out.
+func (r *Room) finalizeShotResult() {
+	c := r.shotCollector
+	r.shotCollector = nil
+	if c == nil || c.shooter == nil {
+		return
+	}
+	shooterRep := c.shooter
+
+	if c.observer != nil {
+		if diffs := rules.CompareShotResults(*shooterRep, *c.observer); len(diffs) > 0 {
+			log.Printf("[room %s] 【两端结果不一致】shot#%d 击球方=%s，以击球方为准：",
+				r.ID, shooterRep.ShotNumber, shooterRep.ShooterID)
+			for _, d := range diffs {
+				log.Printf("    - %s", d)
+			}
+		} else {
+			log.Printf("[room %s] 两端结果一致 shot#%d", r.ID, shooterRep.ShotNumber)
+		}
+	} else {
+		log.Printf("[room %s] 观察方超时/未上报，以击球方结果仲裁 shot#%d",
+			r.ID, shooterRep.ShotNumber)
+	}
+
+	res, err := r.game.ApplyShotResult(*shooterRep)
 	if err != nil {
 		log.Printf("[room %s] ApplyShotResult 失败: %v", r.ID, err)
-		r.failErr(playerID, env.MessageID, err)
+		r.failErr(shooterRep.ShooterID, c.env.MessageID, err)
 		return
 	}
 	log.Printf("[room %s] ApplyShotResult 成功 gameStatus=%s", r.ID, res.GameStatus)
-	r.publishStrikeResult(req.PocketedBalls, res)
+	r.publishStrikeResult(shooterRep.PocketedBalls, res)
 }
 
 // publishStrikeResult broadcasts BALLS_STOPPED and advances the room clocks.
@@ -1092,6 +1197,7 @@ func (r *Room) publishStrikeResult(pocketed []int, res *protocol.StrikeResult) {
 		pocketed = []int{}
 	}
 	r.shotDeadline = time.Time{}
+	r.shotCollector = nil
 	r.syncSummary()
 
 	ballStates := r.game.BallStates()
@@ -1173,6 +1279,7 @@ func (r *Room) publishGameOver(reason string) {
 	r.status = protocol.RoomStatusFinished
 	r.turnDeadline = time.Time{}
 	r.shotDeadline = time.Time{}
+	r.shotCollector = nil
 	r.metrics.GameFinished()
 	r.syncSummary()
 
@@ -1277,10 +1384,17 @@ func (r *Room) onTick(now time.Time) {
 		}
 	}
 
-	// 4. the shooter never reported a settled result: roll the shot back.
+	// 4. the shot did not settle in time. Two cases:
+	//    - the shooter reported but the observer never did -> arbitrate with
+	//      the shooter's result (single-end fallback, observer is optional).
+	//    - the shooter never reported -> roll the shot back as a foul.
 	if r.game.Phase == protocol.PhaseMoving && !r.shotDeadline.IsZero() && now.After(r.shotDeadline) {
 		if _, dc := r.dcDeadline[r.game.CurrentTurn]; !dc {
-			r.applyTimeout(r.game.CurrentTurn, protocol.FoulShotTimeout)
+			if r.shotCollector != nil && r.shotCollector.shooter != nil {
+				r.finalizeShotResult()
+			} else {
+				r.applyTimeout(r.game.CurrentTurn, protocol.FoulShotTimeout)
+			}
 		}
 	}
 }

@@ -319,6 +319,59 @@ func TestNonBreakEightBallArbitrationUnchanged(t *testing.T) {
 
 func intPtr(v int) *int { return &v }
 
+// TestCompareShotResults pins down the P3 two-end consistency check:
+// pocketed/out-of-bounds lists compare as sets (hard rule facts), ball positions
+// compare with a fixed tolerance, and mismatches surface the affected balls.
+func TestCompareShotResults(t *testing.T) {
+	base := func() ShotReport {
+		balls := make([]protocol.BallState, protocol.BallCount)
+		for i := 0; i < protocol.BallCount; i++ {
+			balls[i] = protocol.BallState{
+				BallID:   i,
+				Position: protocol.Vector3{X: float64(i) * 0.1, Z: float64(i) * 0.1},
+			}
+		}
+		return ShotReport{
+			ShotNumber:          1,
+			FirstContactBall:    1,
+			PocketedBalls:       []int{1, 3},
+			CueBallMoved:        true,
+			CushionAfterContact: true,
+			FinalBalls:          balls,
+		}
+	}
+
+	t.Run("一致无差异", func(t *testing.T) {
+		if diffs := CompareShotResults(base(), base()); len(diffs) != 0 {
+			t.Fatalf("expected no diffs, got %v", diffs)
+		}
+	})
+
+	t.Run("进袋列表集合不一致被检出", func(t *testing.T) {
+		observer := base()
+		observer.PocketedBalls = []int{1}
+		if diffs := CompareShotResults(base(), observer); len(diffs) == 0 {
+			t.Fatalf("expected pocketed mismatch to be detected")
+		}
+	})
+
+	t.Run("球位超出容差被检出", func(t *testing.T) {
+		observer := base()
+		observer.FinalBalls[5].Position.X += 0.01 // 10mm > 1mm tolerance
+		if diffs := CompareShotResults(base(), observer); len(diffs) == 0 {
+			t.Fatalf("expected position mismatch to be detected")
+		}
+	})
+
+	t.Run("球位在容差内不算差异", func(t *testing.T) {
+		observer := base()
+		observer.FinalBalls[5].Position.X += 0.0005 // 0.5mm < 1mm tolerance
+		if diffs := CompareShotResults(base(), observer); len(diffs) != 0 {
+			t.Fatalf("expected no diffs within tolerance, got %v", diffs)
+		}
+	})
+}
+
 // TestRule5BlackEightDeclaredPocket 测试规则 #5：黑8叫袋
 func TestRule5BlackEightDeclaredPocket(t *testing.T) {
 	g := NewGame(DefaultOptions())

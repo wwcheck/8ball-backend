@@ -1,7 +1,9 @@
 package rules
 
 import (
+	"fmt"
 	"math"
+	"sort"
 
 	"github.com/yourgame/8ball-backend/pkg/protocol"
 )
@@ -15,6 +17,13 @@ const minSeparationFactor = 0.75
 // when the client claims CueBallMoved. 1mm is far below any real stroke at the
 // minimum cue speed (1.5 m/s) but comfortably above float noise.
 const cueMoveEpsilon = 0.001
+
+// positionCompareTolerance is the maximum planar (XZ) distance, in metres, two
+// settled ball positions may differ by before the two ends are considered
+// divergent. Both clients report positions at fixed precision (P1/P3 确定性同步),
+// so any residual gap is float tail noise; 1mm is far above that yet far below
+// a visually or physically meaningful difference. Tunable in one place.
+const positionCompareTolerance = 0.001
 
 // ValidateShoot checks a SHOOT intent against the authoritative state. It is
 // the first anti-cheat gate: turn order, phase and parameter ranges.
@@ -222,6 +231,59 @@ func (g *Game) ValidateShotResult(playerID string, rep ShotReport) error {
 	return nil
 }
 
+// ValidateObserverShotResult is the lightweight structural gate for the
+// non-shooter's mirrored SHOT_RESULT. Unlike ValidateShotResult it does NOT
+// enforce turn order or physical plausibility: the observer's report is
+// collected purely for comparison and is never arbitrated. It only rejects
+// reports that cannot possibly be compared (wrong shot / phase, malformed ball
+// set, or malformed event lists).
+func (g *Game) ValidateObserverShotResult(rep ShotReport) error {
+	if g.Phase != protocol.PhaseMoving {
+		return protocol.Errf(protocol.ErrInvalidPhase,
+			"当前阶段 %s 不接受击球结果", g.Phase)
+	}
+	if rep.ShotNumber != g.ShotNumber {
+		return protocol.Errf(protocol.ErrDuplicateShot,
+			"shotNumber 不匹配：服务端 %d，收到 %d", g.ShotNumber, rep.ShotNumber)
+	}
+	if !protocol.IsValidBallID(rep.FirstContactBall) {
+		return protocol.Errf(protocol.ErrInvalidShotResult,
+			"firstContactBall %d 非法", rep.FirstContactBall)
+	}
+	if len(rep.FinalBalls) != protocol.BallCount {
+		return protocol.Errf(protocol.ErrInvalidShotResult,
+			"ballStates 必须包含 %d 个球，收到 %d", protocol.BallCount, len(rep.FinalBalls))
+	}
+
+	var seen [protocol.BallCount]bool
+	for _, rb := range rep.FinalBalls {
+		if !protocol.IsValidBallID(rb.BallID) {
+			return protocol.Errf(protocol.ErrInvalidShotResult, "ballId %d 非法", rb.BallID)
+		}
+		if seen[rb.BallID] {
+			return protocol.Errf(protocol.ErrInvalidShotResult, "ballId %d 重复上报", rb.BallID)
+		}
+		seen[rb.BallID] = true
+	}
+	for id, ok := range seen {
+		if !ok {
+			return protocol.Errf(protocol.ErrInvalidShotResult, "缺少 %d 号球的状态", id)
+		}
+	}
+
+	// Event lists: valid ids + duplicate-free only. We deliberately do NOT
+	// enforce the "already off-table" check here — the observer may disagree
+	// with the authoritative pre-shot state, and that disagreement is exactly
+	// what the comparison (CompareShotResults) is meant to surface, not reject.
+	if err := validateEventListIDs(rep.PocketedBalls, "pocketedBalls"); err != nil {
+		return err
+	}
+	if err := validateEventListIDs(rep.OutOfBoundsBalls, "outOfBoundsBalls"); err != nil {
+		return err
+	}
+	return nil
+}
+
 // ValidateStateFrame guards the relayed 20Hz frames.
 func (g *Game) ValidateStateFrame(playerID string, shotNumber int, states []protocol.BallState) error {
 	if g.Phase != protocol.PhaseMoving {
@@ -245,9 +307,10 @@ func (g *Game) ValidateStateFrame(playerID string, shotNumber int, states []prot
 	return nil
 }
 
-// validateEventList checks a pocketed/out-of-bounds id list for validity,
-// duplicates and "already happened" entries.
-func (g *Game) validateEventList(ids []int, field string, already func(protocol.BallState) bool) error {
+// validateEventListIDs checks a pocketed/out-of-bounds id list for validity
+// (legal ids, no duplicates). It does not consult the authoritative state, so
+// it is safe to use for the observer's report too.
+func validateEventListIDs(ids []int, field string) error {
 	if len(ids) > protocol.BallCount {
 		return protocol.Errf(protocol.ErrInvalidShotResult, "%s 数量非法", field)
 	}
@@ -260,6 +323,17 @@ func (g *Game) validateEventList(ids []int, field string, already func(protocol.
 			return protocol.Errf(protocol.ErrInvalidShotResult, "%s 含重复球号 %d", field, id)
 		}
 		seen[id] = true
+	}
+	return nil
+}
+
+// validateEventList checks a pocketed/out-of-bounds id list for validity,
+// duplicates and "already happened" entries.
+func (g *Game) validateEventList(ids []int, field string, already func(protocol.BallState) bool) error {
+	if err := validateEventListIDs(ids, field); err != nil {
+		return err
+	}
+	for _, id := range ids {
 		if already(g.Balls[id]) {
 			return protocol.Errf(protocol.ErrInvalidShotResult,
 				"%s 含本杆之前就已离台的 %d 号球", field, id)
@@ -283,4 +357,95 @@ func (g *Game) requireActiveTurn(playerID string) error {
 		return protocol.Errf(protocol.ErrNotYourTurn, "未到你的回合")
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Two-end result comparison (deterministic-sync P3)
+// ---------------------------------------------------------------------------
+
+// CompareShotResults compares the shooter's authoritative report against the
+// observer's mirrored report for the same shot and returns a slice of
+// human-readable difference descriptions (empty when consistent). It never
+// decides the verdict — arbitration always trusts the shooter; the caller uses
+// the result only to log warnings.
+//
+// Pocketed / out-of-bounds lists are compared as sets: they are hard rule facts
+// and any divergence is a real event mismatch. Ball positions are compared
+// per-ball with positionCompareTolerance; off-table balls are skipped since
+// their positions are meaningless. FirstContactBall and CueBallMoved are
+// reported as extra diagnostics only.
+//
+// The reports' BallStates may arrive in any order.
+func CompareShotResults(shooter, observer ShotReport) []string {
+	var diffs []string
+
+	if !sameIntSet(shooter.PocketedBalls, observer.PocketedBalls) {
+		diffs = append(diffs, fmt.Sprintf("pocketed 不一致: 击球方=%v 观察方=%v",
+			shooter.PocketedBalls, observer.PocketedBalls))
+	}
+	if !sameIntSet(shooter.OutOfBoundsBalls, observer.OutOfBoundsBalls) {
+		diffs = append(diffs, fmt.Sprintf("outOfBounds 不一致: 击球方=%v 观察方=%v",
+			shooter.OutOfBoundsBalls, observer.OutOfBoundsBalls))
+	}
+	if shooter.FirstContactBall != observer.FirstContactBall {
+		diffs = append(diffs, fmt.Sprintf("firstContact 不一致: 击球方=%d 观察方=%d",
+			shooter.FirstContactBall, observer.FirstContactBall))
+	}
+	if shooter.CueBallMoved != observer.CueBallMoved {
+		diffs = append(diffs, fmt.Sprintf("cueBallMoved 不一致: 击球方=%v 观察方=%v",
+			shooter.CueBallMoved, observer.CueBallMoved))
+	}
+
+	a := indexBalls(shooter.FinalBalls)
+	b := indexBalls(observer.FinalBalls)
+	for id := 0; id < protocol.BallCount; id++ {
+		sa, okA := a[id]
+		sb, okB := b[id]
+		if !okA || !okB {
+			// Structural validation already guarantees both are complete;
+			// skip defensively if not.
+			continue
+		}
+		if sa.InPocket || sa.OutOfBounds || sb.InPocket || sb.OutOfBounds {
+			continue
+		}
+		d := protocol.Distance2D(sa.Position, sb.Position)
+		if d > positionCompareTolerance {
+			diffs = append(diffs, fmt.Sprintf(
+				"球[%d] 位置差 %.4fm (击球方=%.4f,%.4f 观察方=%.4f,%.4f)",
+				id, d, sa.Position.X, sa.Position.Z, sb.Position.X, sb.Position.Z))
+		}
+	}
+	return diffs
+}
+
+// sameIntSet reports whether two id lists contain the same elements regardless
+// of order.
+func sameIntSet(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]int(nil), a...)
+	sb := append([]int(nil), b...)
+	sort.Ints(sa)
+	sort.Ints(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// indexBalls maps a (possibly unordered) ball-state slice onto a ball-id-indexed
+// array. Invalid ids are dropped; absent slots keep their zero value with a
+// false presence flag.
+func indexBalls(balls []protocol.BallState) map[int]protocol.BallState {
+	out := make(map[int]protocol.BallState, len(balls))
+	for _, b := range balls {
+		if protocol.IsValidBallID(b.BallID) {
+			out[b.BallID] = b
+		}
+	}
+	return out
 }
